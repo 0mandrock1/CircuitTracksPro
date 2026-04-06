@@ -1,0 +1,5 @@
+{
+  "name": "Circuit Tracks Patch & Sample Manager",
+  "description": "A comprehensive tool for creating, editing, and managing Novation Circuit Tracks SysEx patches and samples with built-in synth preview and cloud library.",
+  "requestFramePermissions": ["midi"]
+}

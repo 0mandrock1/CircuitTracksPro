@@ -1,0 +1,45 @@
+{
+  "entities": {
+    "Patch": {
+      "title": "Synth Patch",
+      "description": "A Novation Circuit Tracks synth patch (SysEx format).",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string", "description": "Name of the patch" },
+        "author": { "type": "string", "description": "Author of the patch" },
+        "authorUid": { "type": "string", "description": "UID of the author" },
+        "data": { "type": "string", "description": "Base64 encoded SysEx data" },
+        "tags": { "type": "array", "items": { "type": "string" }, "description": "Tags for categorization" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Creation timestamp" },
+        "updatedAt": { "type": "string", "format": "date-time", "description": "Last update timestamp" }
+      },
+      "required": ["name", "data", "authorUid"]
+    },
+    "Sample": {
+      "title": "Drum Sample",
+      "description": "A drum sample with metadata for Circuit Tracks.",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string", "description": "Name of the sample" },
+        "authorUid": { "type": "string", "description": "UID of the author" },
+        "data": { "type": "string", "description": "Base64 encoded audio data" },
+        "start": { "type": "number", "description": "Sample start point (0-127)" },
+        "end": { "type": "number", "description": "Sample end point (0-127)" },
+        "pitch": { "type": "number", "description": "Sample pitch (-64 to +63)" },
+        "filter": { "type": "number", "description": "Sample filter (0-127)" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Creation timestamp" }
+      },
+      "required": ["name", "data", "authorUid"]
+    }
+  },
+  "firestore": {
+    "/patches/{patchId}": {
+      "schema": "Patch",
+      "description": "User-generated synth patches"
+    },
+    "/samples/{sampleId}": {
+      "schema": "Sample",
+      "description": "User-uploaded drum samples"
+    }
+  }
+}

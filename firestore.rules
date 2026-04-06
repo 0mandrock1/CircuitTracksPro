@@ -1,0 +1,85 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // ===============================================================
+    // Assumed Data Model
+    // ===============================================================
+    //
+    // Collection: patches
+    // Fields:
+    //   - name: string (required, 1-100 chars)
+    //   - author: string (optional)
+    //   - authorUid: string (required, immutable)
+    //   - data: string (required, base64 data)
+    //   - tags: list (optional, strings)
+    //   - createdAt: timestamp (required)
+    //   - updatedAt: timestamp (required)
+    //
+    // Collection: samples
+    // Fields:
+    //   - name: string (required, 1-100 chars)
+    //   - authorUid: string (required, immutable)
+    //   - data: string (required, base64 data)
+    //   - start: number (required, 0-127)
+    //   - end: number (required, 0-127)
+    //   - pitch: number (required, -64 to 63)
+    //   - filter: number (required, 0-127)
+    //   - createdAt: timestamp (required)
+    //
+    // ===============================================================
+
+    // Helper Functions
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    function isDocOwner() {
+      return isAuthenticated() && request.auth.uid == resource.data.authorUid;
+    }
+
+    function isValidString(val, min, max) {
+      return val is string && val.size() >= min && val.size() <= max;
+    }
+
+    function isValidPatch(data) {
+      return data.keys().hasAll(['name', 'authorUid', 'data', 'createdAt', 'updatedAt']) &&
+             isValidString(data.name, 1, 100) &&
+             data.authorUid == request.auth.uid &&
+             data.data is string &&
+             data.createdAt is timestamp &&
+             data.updatedAt is timestamp;
+    }
+
+    function isValidSample(data) {
+      return data.keys().hasAll(['name', 'authorUid', 'data', 'start', 'end', 'pitch', 'filter', 'createdAt']) &&
+             isValidString(data.name, 1, 100) &&
+             data.authorUid == request.auth.uid &&
+             data.data is string &&
+             data.start is number && data.start >= 0 && data.start <= 127 &&
+             data.end is number && data.end >= 0 && data.end <= 127 &&
+             data.pitch is number && data.pitch >= -64 && data.pitch <= 63 &&
+             data.filter is number && data.filter >= 0 && data.filter <= 127 &&
+             data.createdAt is timestamp;
+    }
+
+    match /patches/{patchId} {
+      allow read: if true; // Publicly readable
+      allow create: if isAuthenticated() && isValidPatch(request.resource.data);
+      allow update: if isDocOwner() && isValidPatch(request.resource.data) && 
+                      request.resource.data.authorUid == resource.data.authorUid;
+      allow delete: if isDocOwner();
+    }
+
+    match /samples/{sampleId} {
+      allow read: if true; // Publicly readable
+      allow create: if isAuthenticated() && isValidSample(request.resource.data);
+      allow update: if isDocOwner() && isValidSample(request.resource.data) &&
+                      request.resource.data.authorUid == resource.data.authorUid;
+      allow delete: if isDocOwner();
+    }
+  }
+}

@@ -1,0 +1,50 @@
+@import "tailwindcss";
+
+@theme {
+  --color-brand-primary: #ff2d55;
+  --color-brand-secondary: #ff3b30;
+  --color-brand-accent: #ff2d78;
+  
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+}
+
+@layer base {
+  body {
+    @apply bg-[#0a0506] text-zinc-100 antialiased;
+  }
+}
+
+.knob-container {
+  @apply relative flex flex-col items-center gap-1;
+}
+
+.knob-ring {
+  @apply w-12 h-12 rounded-full border-2 border-zinc-800 flex items-center justify-center transition-all;
+  background: radial-gradient(circle at center, #1a1011 0%, #0a0506 100%);
+}
+
+.knob-indicator {
+  @apply absolute w-1 h-4 bg-brand-primary rounded-full origin-bottom;
+  bottom: 50%;
+}
+
+.pro-panel {
+  @apply bg-[#140a0b] border border-[#2a1517] rounded-xl shadow-2xl;
+}
+
+.pro-input {
+  @apply bg-[#1a1011] border border-[#3a1a1d] rounded-md px-3 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-brand-primary transition-all;
+}
+
+.pro-button {
+  @apply px-4 py-2 rounded-lg font-bold text-sm transition-all active:scale-95 flex items-center gap-2;
+}
+
+.pro-button-primary {
+  @apply bg-brand-primary hover:bg-brand-accent text-white shadow-lg shadow-brand-primary/20;
+}
+
+.pro-button-secondary {
+  @apply bg-[#2a1517] hover:bg-[#3a1a1d] text-brand-primary border border-brand-primary/30;
+}
