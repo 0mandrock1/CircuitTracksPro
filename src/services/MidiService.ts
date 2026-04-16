@@ -225,12 +225,23 @@ export class MidiService {
       }
 
       // Initial guess based on signature or length
-      // For Circuit Tracks, the header is usually 8 or 9 bytes
-      let headerSize = (isCircuit && sigIndex === 1) ? 8 : (sigIndex !== -1 ? sigIndex + 7 : totalLength - 341);
-      if (isCircuit && sigIndex === 1 && data[6] === 0x00) {
-        headerSize = 9; // Found Device ID byte (F0 00 20 29 01 64 00 ...)
-      }
+      // For Circuit Tracks:
+      // The "Location" byte of the Novation header is actually the "Category" byte (offset 0) of the Nova patch.
+      // This means the header effectively ends 1 byte earlier than standard documentation suggests.
+      // 350 bytes (Full F0/F7) -> 8-byte header (F0 00 20 29 01 64 40 00)
+      // 348 bytes (Stripped F0/F7) -> 7-byte header (00 20 29 01 64 40 00)
+      let headerSize = (sigIndex !== -1) ? sigIndex + 7 : totalLength - 341;
       
+      if (isCircuit) {
+        if (totalLength === 350 || totalLength === 349) {
+          headerSize = 8;
+        } else if (totalLength === 348 || totalLength === 347) {
+          headerSize = 7;
+        } else if (sigIndex !== -1) {
+          headerSize = sigIndex + 7;
+        }
+      }
+
       // 2. Brute-force alignment check if we have a reference patch
       if (this.lastSentPatch) {
         const sentData = NovaSysEx.serialize(this.lastSentPatch);
@@ -239,12 +250,9 @@ export class MidiService {
         let bestScore = -1;
         let bestMatches = 0;
 
-        // Check a wide range around our signature (Sig+4 to Sig+20)
-        // Novation headers can be quite long depending on the message type
-        const startSearch = sigIndex !== -1 ? sigIndex + 4 : 5;
-        const endSearch = sigIndex !== -1 ? sigIndex + 20 : 32;
-
-        for (let testSize = startSearch; testSize <= endSearch; testSize++) {
+        // Check a wider range around our signature (Sig+4 to Sig+20)
+        // We check 5 to 12 specifically for Novation headers
+        for (let testSize = 5; testSize <= 12; testSize++) {
           if (testSize + 340 > data.length) break;
           
           let score = 0;
@@ -252,14 +260,16 @@ export class MidiService {
           const testSlice = data.slice(testSize, testSize + 340);
           
           // Weighted scoring:
-          // 1. Check for Name Match (Huge bonus)
+          // 1. Check for Name Match (CRITICAL)
           const sentName = this.lastSentPatch.name.trim().toLowerCase();
           if (sentName.length > 2) {
-            // Circuit Tracks Name is at offset 1-16
             const recvNameBytes = testSlice.slice(1, 17);
             const recvName = Array.from(recvNameBytes).map(b => b > 31 && b < 127 ? String.fromCharCode(b) : ".").join("").trim().toLowerCase();
-            if (recvName.includes(sentName) || sentName.includes(recvName)) {
-              score += 5000; // Even higher priority for name match
+            
+            if (recvName === sentName) {
+              score += 100000; // Absolute priority for name match
+            } else if (recvName.includes(sentName) || sentName.includes(recvName)) {
+              score += 20000;
             }
           }
 
@@ -267,11 +277,9 @@ export class MidiService {
           for (const i of mappedOffsets) {
             if (sentData[i] === testSlice[i]) {
               matches++;
-              // Bonus for non-zero matches (avoids being fooled by empty patches)
-              score += (sentData[i] !== 0) ? 20 : 2;
-            } else {
-              // Penalty for mismatch on non-zero values
-              if (sentData[i] !== 0) score -= 5;
+              score += (sentData[i] !== 0) ? 20 : 1; 
+            } else if (sentData[i] !== 0) {
+              score -= 10; 
             }
           }
 
@@ -282,22 +290,28 @@ export class MidiService {
           }
         }
 
-        if (bestMatches > (mappedOffsets.length * 0.05)) { // Lowered threshold slightly but rely on score
-          console.log(`%cMIDI: Alignment Verified - Header Size: ${bestSize} (${bestMatches}/${mappedOffsets.length} params match, Score: ${bestScore})`, "color: #10b981; font-weight: bold");
+        // If we found a significantly better alignment via scoring, use it
+        if (bestScore > 500) {
+          console.log(`%cMIDI: Alignment Verified - Header Size: ${bestSize} (Score: ${bestScore})`, "color: #10b981; font-weight: bold");
           headerSize = bestSize;
           this.detectedHeaderSize = headerSize;
-        } else {
-          console.warn(`%cMIDI: Poor alignment match (${bestMatches}/${mappedOffsets.length}). Using guess: ${headerSize}`, "color: #ef4444");
         }
       }
 
       // 3. Extract metadata from the confirmed header
       // Header is usually: F0 00 20 29 01 <prod> [<dev>] <cmd> <loc>
-      let cmd = data[headerSize - 2];
-      let loc = data[headerSize - 1];
+      // Based on logs, Tracks returns an 8-byte header for dump requests:
+      // F0 00 20 29 01 64 40 00
+      let cmd = 0;
+      let loc = 0;
       
-      // If it looks like a 7-byte header (no loc), adjust
-      if (headerSize === 7) {
+      if (headerSize === 8) {
+        cmd = data[6];
+        loc = data[7];
+      } else if (headerSize === 9) {
+        cmd = data[7];
+        loc = data[8];
+      } else if (headerSize === 7) {
         cmd = data[6];
         loc = 0;
       }
@@ -569,8 +583,8 @@ export class MidiService {
       console.error("MIDI: Fetch failed - Output not found");
       return 0;
     }
-    // Reverting to 8-byte header and trying command 0x40 (Request Patch) with location 0x00
-    // This format is most likely to give a response based on previous logs
+    // Using 8-byte header and command 0x40 (Request Patch) with location 0x00
+    // This format successfully returned data (Happy Hard) in the logs
     const msg = [0xF0, 0x00, 0x20, 0x29, 0x01, this.productId, 0x40, synthIndex, 0xF7];
     
     const hexMsg = msg.map(b => b.toString(16).padStart(2, '0').toUpperCase()).join(' ');
@@ -591,8 +605,10 @@ export class MidiService {
     }
     
     // Circuit Tracks "Replace Current Patch" SysEx (Command 0x01)
-    // Reverting to 8-byte header and location 0x00
-    const header = [0xF0, 0x00, 0x20, 0x29, 0x01, this.productId, 0x01, synthIndex];
+    // Using 9-byte header with Device ID (0x00) as per Programmer's Reference
+    // Format: [F0 00 20 29 01 <prod> <dev> <cmd> <loc>]
+    // Command 0x01 is "Replace Current Patch"
+    const header = [0xF0, 0x00, 0x20, 0x29, 0x01, this.productId, 0x00, 0x01, synthIndex];
       
     const data = NovaSysEx.serialize(patch);
     const footer = [0xF7];
@@ -624,7 +640,7 @@ export class MidiService {
     this.sendPatch(patch, synthIndex);
     
     // 2. Wait for the device to process (Circuit can be slow)
-    await new Promise(resolve => setTimeout(resolve, 3000));
+    await new Promise(resolve => setTimeout(resolve, 2000));
     
     // 3. Request the patch back
     console.log("%cMIDI VERIFY: Requesting patch back for comparison...", "color: #8b5cf6");
