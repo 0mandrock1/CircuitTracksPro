@@ -7,6 +7,8 @@ import { Save, Play, Download, Upload, Cpu, Activity, Zap, Layers, RefreshCw, Se
 import { cn } from '../lib/utils';
 import { motion, AnimatePresence } from 'motion/react';
 
+import { Visualizer } from './Visualizer';
+
 const DEFAULT_PATCH: PatchData = {
   name: "INIT PATCH",
   author: "User",
@@ -32,6 +34,7 @@ export function PatchEditor({ user }: { user: User | null }) {
   const [saving, setSaving] = useState(false);
   const [midiStatus, setMidiStatus] = useState("Disconnected");
   const [activeTab, setActiveTab] = useState<'oscillators' | 'filter' | 'envelopes' | 'modulation'>('oscillators');
+  const [selectedSynth, setSelectedSynth] = useState<0 | 1>(0);
 
   useEffect(() => {
     const initMidi = async () => {
@@ -53,28 +56,69 @@ export function PatchEditor({ user }: { user: User | null }) {
     }));
   };
 
+  const [midiLog, setMidiLog] = useState<string[]>([]);
+  const [lastSysEx, setLastSysEx] = useState<string>("");
+  const [showMidiSettings, setShowMidiSettings] = useState(false);
+  const [synthTrigger, setSynthTrigger] = useState(false);
+
+  const addLog = (msg: string) => {
+    setMidiLog(prev => [msg, ...prev].slice(0, 5));
+  };
+
   useEffect(() => {
-    const cleanup = midiService.onPatchReceived((data) => {
-      console.log("SysEx Received:", data);
-      // Simulate decoding the 340 bytes
-      setPatch(prev => ({ ...prev, name: "FETCHED FROM CIRCUIT" }));
-      alert("Patch data received from Circuit!");
+    const cleanupPatch = midiService.onPatchReceived((receivedPatch) => {
+      console.log("SysEx Received & Deserialized:", receivedPatch);
+      addLog(`RECV: PATCH OK`);
+      setPatch(receivedPatch);
     });
-    return cleanup;
-  }, []);
+    
+    const cleanupSysEx = midiService.onSysExReceived((data) => {
+      const hex = Array.from(data).map(b => b.toString(16).padStart(2, '0').toUpperCase()).join(' ');
+      setLastSysEx(hex);
+    });
+
+    const cleanupError = midiService.onMidiError((msg) => {
+      addLog(`ERR: ${msg}`);
+    });
+
+    return () => {
+      cleanupPatch();
+      cleanupSysEx();
+      cleanupError();
+    };
+  }, [midiStatus]);
 
   const handleFetch = () => {
-    midiService.requestPatchDump(0);
+    const bytes = midiService.requestPatchDump(selectedSynth);
+    if (bytes > 0) {
+      addLog(`SEND: FETCH S${selectedSynth + 1} (${bytes}B)`);
+      // Set a timeout to check if we got a response
+      setTimeout(() => {
+        addLog("FETCH: WAITING...");
+      }, 1000);
+    } else {
+      addLog("SEND: FETCH FAILED");
+    }
   };
 
   const handleSend = () => {
-    midiService.sendPatch(patch, 0);
-    alert("Patch sent to Circuit!");
+    const bytes = midiService.sendPatch(patch, selectedSynth);
+    if (bytes > 0) {
+      addLog(`SEND: PATCH S${selectedSynth + 1} OK (${bytes}B)`);
+      // alert("Patch sent to Circuit!"); // Removing alert as it's annoying
+    } else {
+      addLog("SEND: PATCH FAILED");
+    }
+  };
+
+  const handleHWPreview = (note: number, synthIndex: number = 0) => {
+    addLog(`SEND: NOTE ${note} S${synthIndex + 1}`);
+    midiService.playNoteOnHardware(note, synthIndex);
   };
 
   return (
     <div className="space-y-6">
-      <SynthPreview patch={patch as any} trigger={trigger} />
+      <SynthPreview patch={patch as any} trigger={synthTrigger} />
       
       {/* Pro Toolbar */}
       <div className="pro-panel p-4 flex flex-col lg:flex-row items-center justify-between gap-6">
@@ -93,21 +137,125 @@ export function PatchEditor({ user }: { user: User | null }) {
             <div className="flex items-center gap-2 mt-1">
               <span className={cn("w-2 h-2 rounded-full", midiStatus !== "Disconnected" ? "bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)]" : "bg-zinc-700")} />
               <span className="text-[10px] font-bold text-zinc-500 uppercase tracking-tighter">MIDI: {midiStatus}</span>
+              <button 
+                onClick={() => setShowMidiSettings(!showMidiSettings)}
+                className="text-[8px] font-black text-zinc-600 hover:text-brand-primary transition-colors uppercase tracking-widest ml-2"
+              >
+                [Settings]
+              </button>
+              {midiStatus === "Disconnected" && (
+                <button 
+                  onClick={async () => {
+                    const success = await midiService.reconnect();
+                    if (success) {
+                      setMidiStatus(midiService.getDeviceName());
+                      addLog("MIDI: RECONNECTED");
+                    } else {
+                      addLog("MIDI: RECONNECT FAILED");
+                    }
+                  }}
+                  className="text-[8px] font-black text-brand-primary hover:text-white transition-colors uppercase tracking-widest ml-2 underline"
+                >
+                  Reconnect
+                </button>
+              )}
             </div>
           </div>
+          {midiLog.length > 0 && (
+            <div className="flex flex-col gap-1 border-l border-zinc-800 pl-4 min-w-[200px] max-h-[60px] overflow-y-auto custom-scrollbar">
+              {midiLog.map((log, i) => (
+                <div key={i} className={cn(
+                  "text-[9px] font-mono uppercase tracking-tighter animate-in fade-in slide-in-from-left-1",
+                  log.includes("FAILED") || log.includes("ERR") ? "text-red-500" : "text-brand-primary/80"
+                )}>
+                  {log}
+                </div>
+              ))}
+              {lastSysEx && (
+                <div className="text-[8px] font-mono text-zinc-400 mt-1 border-t border-zinc-800 pt-1 break-all leading-tight">
+                  <span className="text-zinc-600 mr-1">HEX:</span>
+                  {lastSysEx.substring(0, 60)}...
+                </div>
+              )}
+            </div>
+          )}
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
-          <button onClick={handleFetch} className="pro-button pro-button-secondary">
-            <RefreshCw className="w-4 h-4" /> FETCH
-          </button>
-          <button onClick={handleSend} className="pro-button pro-button-secondary">
-            <Send className="w-4 h-4" /> SEND
-          </button>
+          <div className="flex items-center gap-1 bg-zinc-900/50 p-1 rounded-lg border border-zinc-800 mr-2">
+            <button 
+              onClick={() => setSelectedSynth(0)} 
+              className={cn(
+                "px-3 py-1.5 text-[9px] font-black rounded transition-all",
+                selectedSynth === 0 ? "bg-brand-primary text-white" : "bg-zinc-800 text-zinc-500 hover:bg-zinc-700"
+              )}
+            >
+              SYNTH 1
+            </button>
+            <button 
+              onClick={() => setSelectedSynth(1)} 
+              className={cn(
+                "px-3 py-1.5 text-[9px] font-black rounded transition-all",
+                selectedSynth === 1 ? "bg-brand-primary text-white" : "bg-zinc-800 text-zinc-500 hover:bg-zinc-700"
+              )}
+            >
+              SYNTH 2
+            </button>
+          </div>
+
+          <div className="flex items-center gap-1 bg-zinc-900/50 p-1 rounded-lg border border-zinc-800 mr-2">
+            <div className="group relative">
+              <button onClick={() => handleHWPreview(60, 0)} className="px-3 py-1.5 text-[9px] font-black bg-zinc-800 hover:bg-zinc-700 text-zinc-400 rounded border border-zinc-700 transition-all">
+                SYNTH
+              </button>
+              <div className="absolute top-full left-1/2 -translate-x-1/2 mt-2 w-32 p-2 bg-zinc-900 border border-zinc-800 rounded text-[8px] text-zinc-400 opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity z-50 shadow-xl text-center">
+                Plays a test note on Synth 1.
+                <div className="absolute bottom-full left-1/2 -translate-x-1/2 border-4 border-transparent border-b-zinc-800" />
+              </div>
+            </div>
+            <div className="group relative">
+              <button onClick={() => handleHWPreview(36, 1)} className="px-3 py-1.5 text-[9px] font-black bg-zinc-800 hover:bg-zinc-700 text-zinc-400 rounded border border-zinc-700 transition-all">
+                BASS
+              </button>
+              <div className="absolute top-full left-1/2 -translate-x-1/2 mt-2 w-32 p-2 bg-zinc-900 border border-zinc-800 rounded text-[8px] text-zinc-400 opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity z-50 shadow-xl text-center">
+                Plays a test note on Synth 2.
+                <div className="absolute bottom-full left-1/2 -translate-x-1/2 border-4 border-transparent border-b-zinc-800" />
+              </div>
+            </div>
+          </div>
+          <div className="group relative">
+            <button onClick={handleFetch} className="pro-button pro-button-secondary">
+              <RefreshCw className="w-4 h-4" /> FETCH
+            </button>
+            <div className="absolute top-full left-1/2 -translate-x-1/2 mt-2 w-48 p-2 bg-zinc-900 border border-zinc-800 rounded text-[8px] text-zinc-400 opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity z-50 shadow-xl text-center">
+              Requests the current patch data from your Circuit Tracks.
+              <div className="absolute bottom-full left-1/2 -translate-x-1/2 border-4 border-transparent border-b-zinc-800" />
+            </div>
+          </div>
+          <div className="group relative">
+            <button onClick={handleSend} className="pro-button pro-button-secondary">
+              <Send className="w-4 h-4" /> SEND
+            </button>
+            <div className="absolute top-full left-1/2 -translate-x-1/2 mt-2 w-48 p-2 bg-zinc-900 border border-zinc-800 rounded text-[8px] text-zinc-400 opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity z-50 shadow-xl text-center">
+              Sends the current editor settings to your Circuit Tracks.
+              <div className="absolute bottom-full left-1/2 -translate-x-1/2 border-4 border-transparent border-b-zinc-800" />
+            </div>
+          </div>
           <div className="w-px h-8 bg-zinc-800 mx-2 hidden sm:block" />
-          <button onClick={() => setTrigger(!trigger)} className="pro-button pro-button-primary">
-            <Play className="w-4 h-4 fill-current" /> PREVIEW
-          </button>
+          <div className="group relative flex items-center gap-2">
+            <div className="flex flex-col items-center">
+              <button onClick={() => setSynthTrigger(!synthTrigger)} className="pro-button pro-button-primary">
+                <Play className="w-4 h-4 fill-current" /> PREVIEW
+              </button>
+              <div className="h-1 w-full mt-1 bg-indigo-500/20 rounded-full overflow-hidden">
+                <Visualizer trigger={synthTrigger} patch={patch} />
+              </div>
+            </div>
+            <div className="absolute top-full left-1/2 -translate-x-1/2 mt-2 w-48 p-2 bg-zinc-900 border border-zinc-800 rounded text-[8px] text-zinc-400 opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity z-50 shadow-xl text-center">
+              Plays a short preview note on your computer's speakers.
+              <div className="absolute bottom-full left-1/2 -translate-x-1/2 border-4 border-transparent border-b-zinc-800" />
+            </div>
+          </div>
           {user && (
             <button onClick={() => {}} className="pro-button bg-emerald-600 hover:bg-emerald-500 text-white">
               <Save className="w-4 h-4" /> CLOUD
@@ -115,6 +263,104 @@ export function PatchEditor({ user }: { user: User | null }) {
           )}
         </div>
       </div>
+
+      <AnimatePresence>
+        {showMidiSettings && (
+          <motion.div 
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: 'auto', opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            className="overflow-hidden"
+          >
+            <div className="pro-panel p-4 bg-zinc-900/30 border-brand-primary/20">
+              <div className="flex items-center justify-between mb-4">
+                <h4 className="text-[10px] font-black text-brand-primary uppercase tracking-[0.2em]">MIDI Debug & Settings</h4>
+                <button onClick={() => setShowMidiSettings(false)} className="text-[10px] text-zinc-600 hover:text-white uppercase font-black">Close</button>
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div className="space-y-2">
+                  <p className="text-[9px] font-bold text-zinc-500 uppercase">Header Format</p>
+                  <div className="flex gap-2">
+                    <button 
+                      onClick={() => (midiService as any).useNineByteHeader = false}
+                      className={cn("flex-1 py-2 text-[9px] font-black rounded border transition-all", !(midiService as any).useNineByteHeader ? "bg-brand-primary border-brand-primary text-white" : "bg-zinc-800 border-zinc-700 text-zinc-500")}
+                    >
+                      8-BYTE (STD)
+                    </button>
+                    <button 
+                      onClick={() => (midiService as any).useNineByteHeader = true}
+                      className={cn("flex-1 py-2 text-[9px] font-black rounded border transition-all", (midiService as any).useNineByteHeader ? "bg-brand-primary border-brand-primary text-white" : "bg-zinc-800 border-zinc-700 text-zinc-500")}
+                    >
+                      9-BYTE (EXT)
+                    </button>
+                  </div>
+                </div>
+                <div className="space-y-2">
+                  <p className="text-[9px] font-bold text-zinc-500 uppercase">Product ID</p>
+                  <div className="flex gap-2">
+                    <button 
+                      onClick={() => (midiService as any).productId = 0x64}
+                      className={cn("flex-1 py-2 text-[9px] font-black rounded border transition-all", (midiService as any).productId === 0x64 ? "bg-brand-primary border-brand-primary text-white" : "bg-zinc-800 border-zinc-700 text-zinc-500")}
+                    >
+                      TRACKS (64h)
+                    </button>
+                    <button 
+                      onClick={() => (midiService as any).productId = 0x60}
+                      className={cn("flex-1 py-2 text-[9px] font-black rounded border transition-all", (midiService as any).productId === 0x60 ? "bg-brand-primary border-brand-primary text-white" : "bg-zinc-800 border-zinc-700 text-zinc-500")}
+                    >
+                      CIRCUIT (60h)
+                    </button>
+                  </div>
+                </div>
+                <div className="space-y-2">
+                  <p className="text-[9px] font-bold text-zinc-500 uppercase">Header Size</p>
+                  <div className="flex gap-2">
+                    <button 
+                      onClick={() => (midiService as any).forceHeaderSize = 8}
+                      className={cn("flex-1 py-1 text-[8px] font-black rounded border transition-all", (midiService as any).forceHeaderSize === 8 ? "bg-brand-primary border-brand-primary text-white" : "bg-zinc-800 border-zinc-700 text-zinc-500")}
+                    >
+                      FORCE 8
+                    </button>
+                    <button 
+                      onClick={() => (midiService as any).forceHeaderSize = 9}
+                      className={cn("flex-1 py-1 text-[8px] font-black rounded border transition-all", (midiService as any).forceHeaderSize === 9 ? "bg-brand-primary border-brand-primary text-white" : "bg-zinc-800 border-zinc-700 text-zinc-500")}
+                    >
+                      FORCE 9
+                    </button>
+                    <button 
+                      onClick={() => (midiService as any).forceHeaderSize = null}
+                      className={cn("flex-1 py-1 text-[8px] font-black rounded border transition-all", (midiService as any).forceHeaderSize === null ? "bg-brand-primary border-brand-primary text-white" : "bg-zinc-800 border-zinc-700 text-zinc-500")}
+                    >
+                      AUTO
+                    </button>
+                  </div>
+                </div>
+                <div className="space-y-2">
+                  <p className="text-[9px] font-bold text-zinc-500 uppercase">Advanced</p>
+                  <div className="flex gap-2">
+                    <button 
+                      onClick={() => (midiService as any).useExtraByte = !(midiService as any).useExtraByte}
+                      className={cn("flex-1 py-1 text-[8px] font-black rounded border transition-all", (midiService as any).useExtraByte ? "bg-brand-primary border-brand-primary text-white" : "bg-zinc-800 border-zinc-700 text-zinc-500")}
+                    >
+                      EXTRA BYTE
+                    </button>
+                  </div>
+                </div>
+                <div className="space-y-2">
+                  <p className="text-[9px] font-bold text-zinc-500 uppercase">Status</p>
+                  <div className="bg-zinc-950 p-2 rounded border border-zinc-800 text-[8px] font-mono text-emerald-500">
+                    <div>HEADER: {(midiService as any).forceHeaderSize || (midiService as any).detectedHeaderSize}-BYTE {(midiService as any).forceHeaderSize ? '(FORCED)' : '(AUTO)'}</div>
+                    <div>PROD_ID: 0x{(midiService as any).productId?.toString(16).toUpperCase()}</div>
+                    <div>DEV_ID: 0x{(midiService as any).deviceId?.toString(16).toUpperCase()}</div>
+                    <div>EXTRA_B: {(midiService as any).useExtraByte ? 'YES' : 'NO'}</div>
+                    <div>SYNTH: {selectedSynth + 1}</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {/* Tabs */}
       <div className="flex gap-1 bg-[#1a1011] p-1 rounded-xl border border-[#2a1517]">
@@ -140,10 +386,23 @@ export function PatchEditor({ user }: { user: User | null }) {
                 <div className="space-y-6">
                   <WaveformSelector value={patch.osc1.waveform} onChange={v => updatePatch('osc1', 'waveform', v)} />
                   <div className="grid grid-cols-2 gap-6">
-                    <Knob label="PITCH" value={patch.osc1.pitch} min={-64} max={63} onChange={v => updatePatch('osc1', 'pitch', v)} />
-                    <Knob label="DETUNE" value={patch.osc1.detune} min={-64} max={63} onChange={v => updatePatch('osc1', 'detune', v)} />
-                    <Knob label="PW" value={patch.osc1.pulseWidth} onChange={v => updatePatch('osc1', 'pulseWidth', v)} />
-                    <Knob label="VIB" value={patch.osc1.vibrato} onChange={v => updatePatch('osc1', 'vibrato', v)} />
+                    <Knob label="PITCH" value={patch.osc1.pitch} min={-64} max={63} onChange={v => updatePatch('osc1', 'pitch', v)} tooltip="Adjusts the base frequency in semitones." />
+                    <Knob label="DETUNE" value={patch.osc1.detune} min={-64} max={63} onChange={v => updatePatch('osc1', 'detune', v)} tooltip="Fine-tunes frequency for a thicker sound." />
+                    <Knob label="PW" value={patch.osc1.pulseWidth} onChange={v => updatePatch('osc1', 'pulseWidth', v)} tooltip="Changes square wave width and harmonics." />
+                    <Knob label="VIB" value={patch.osc1.vibrato} onChange={v => updatePatch('osc1', 'vibrato', v)} tooltip="Adds periodic pitch modulation." />
+                    <div className="flex items-center gap-2 group relative">
+                      <input 
+                        type="checkbox" 
+                        checked={patch.osc1.sync} 
+                        onChange={e => updatePatch('osc1', 'sync', e.target.checked)}
+                        className="w-4 h-4 rounded border-zinc-800 bg-zinc-900 text-brand-primary focus:ring-brand-primary/20"
+                      />
+                      <span className="text-[9px] font-black text-zinc-500 uppercase tracking-widest">SYNC</span>
+                      <div className="absolute bottom-full left-0 mb-2 w-48 p-2 bg-zinc-900 border border-zinc-800 rounded text-[8px] text-zinc-400 opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity z-50 shadow-xl">
+                        Hard sync: Resets Osc 1 phase when master completes a cycle. Creates sharp, aggressive, harmonically complex tones.
+                        <div className="absolute top-full left-2 border-4 border-transparent border-t-zinc-800" />
+                      </div>
+                    </div>
                   </div>
                 </div>
               </ProSection>
@@ -151,25 +410,39 @@ export function PatchEditor({ user }: { user: User | null }) {
                 <div className="space-y-6">
                   <WaveformSelector value={patch.osc2.waveform} onChange={v => updatePatch('osc2', 'waveform', v)} />
                   <div className="grid grid-cols-2 gap-6">
-                    <Knob label="PITCH" value={patch.osc2.pitch} min={-64} max={63} onChange={v => updatePatch('osc2', 'pitch', v)} />
-                    <Knob label="DETUNE" value={patch.osc2.detune} min={-64} max={63} onChange={v => updatePatch('osc2', 'detune', v)} />
-                    <Knob label="PW" value={patch.osc2.pulseWidth} onChange={v => updatePatch('osc2', 'pulseWidth', v)} />
-                    <Knob label="VIB" value={patch.osc2.vibrato} onChange={v => updatePatch('osc2', 'vibrato', v)} />
+                    <Knob label="PITCH" value={patch.osc2.pitch} min={-64} max={63} onChange={v => updatePatch('osc2', 'pitch', v)} tooltip="Adjusts the base frequency in semitones." />
+                    <Knob label="DETUNE" value={patch.osc2.detune} min={-64} max={63} onChange={v => updatePatch('osc2', 'detune', v)} tooltip="Fine-tunes frequency for a thicker sound." />
+                    <Knob label="PW" value={patch.osc2.pulseWidth} onChange={v => updatePatch('osc2', 'pulseWidth', v)} tooltip="Changes square wave width and harmonics." />
+                    <Knob label="VIB" value={patch.osc2.vibrato} onChange={v => updatePatch('osc2', 'vibrato', v)} tooltip="Adds periodic pitch modulation." />
+                    <div className="flex items-center gap-2 group relative">
+                      <input 
+                        type="checkbox" 
+                        checked={patch.osc2.sync} 
+                        onChange={e => updatePatch('osc2', 'sync', e.target.checked)}
+                        className="w-4 h-4 rounded border-zinc-800 bg-zinc-900 text-brand-primary focus:ring-brand-primary/20"
+                      />
+                      <span className="text-[9px] font-black text-zinc-500 uppercase tracking-widest">SYNC</span>
+                      <div className="absolute bottom-full left-0 mb-2 w-48 p-2 bg-zinc-900 border border-zinc-800 rounded text-[8px] text-zinc-400 opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity z-50 shadow-xl">
+                        Hard sync: Resets Osc 2 phase when master completes a cycle. Creates sharp, aggressive, harmonically complex tones.
+                        <div className="absolute top-full left-2 border-4 border-transparent border-t-zinc-800" />
+                      </div>
+                    </div>
                   </div>
                 </div>
               </ProSection>
               <ProSection title="MIXER">
                 <div className="grid grid-cols-2 gap-6">
-                  <Knob label="OSC 1" value={patch.mixer.osc1Level} onChange={v => updatePatch('mixer', 'osc1Level', v)} />
-                  <Knob label="OSC 2" value={patch.mixer.osc2Level} onChange={v => updatePatch('mixer', 'osc2Level', v)} />
-                  <Knob label="SUB" value={patch.mixer.subLevel} onChange={v => updatePatch('mixer', 'subLevel', v)} />
-                  <Knob label="NOISE" value={patch.mixer.noiseLevel} onChange={v => updatePatch('mixer', 'noiseLevel', v)} />
+                  <Knob label="OSC 1" value={patch.mixer.osc1Level} onChange={v => updatePatch('mixer', 'osc1Level', v)} tooltip="Volume level of Oscillator 1." />
+                  <Knob label="OSC 2" value={patch.mixer.osc2Level} onChange={v => updatePatch('mixer', 'osc2Level', v)} tooltip="Volume level of Oscillator 2." />
+                  <Knob label="SUB" value={patch.mixer.subLevel} onChange={v => updatePatch('mixer', 'subLevel', v)} tooltip="Volume level of the Sub Oscillator." />
+                  <Knob label="NOISE" value={patch.mixer.noiseLevel} onChange={v => updatePatch('mixer', 'noiseLevel', v)} tooltip="Volume level of the Noise generator." />
+                  <Knob label="RING MOD" value={patch.mixer.ringMod} onChange={v => updatePatch('mixer', 'ringMod', v)} tooltip="Metallic texture via Osc 1 & 2 multiplication." />
                 </div>
               </ProSection>
               <ProSection title="SUB / NOISE">
                 <div className="grid grid-cols-2 gap-6">
-                  <Knob label="SUB WAVE" value={patch.subOsc.waveform} onChange={v => updatePatch('subOsc', 'waveform', v)} />
-                  <Knob label="NOISE TYPE" value={patch.noise.type} onChange={v => updatePatch('noise', 'type', v)} />
+                  <Knob label="SUB WAVE" value={patch.subOsc.waveform} onChange={v => updatePatch('subOsc', 'waveform', v)} tooltip="Selects the sub-oscillator shape (Sine, Tri, Saw, Square)." />
+                  <Knob label="NOISE TYPE" value={patch.noise.type} onChange={v => updatePatch('noise', 'type', v)} tooltip="Changes the noise color (White, Pink, etc.)." />
                 </div>
               </ProSection>
             </>
@@ -179,16 +452,16 @@ export function PatchEditor({ user }: { user: User | null }) {
             <>
               <ProSection title="FILTER CORE">
                 <div className="grid grid-cols-2 gap-6">
-                  <Knob label="CUTOFF" value={patch.filter.cutoff} onChange={v => updatePatch('filter', 'cutoff', v)} />
-                  <Knob label="RES" value={patch.filter.resonance} onChange={v => updatePatch('filter', 'resonance', v)} />
-                  <Knob label="TYPE" value={patch.filter.type} onChange={v => updatePatch('filter', 'type', v)} />
-                  <Knob label="TRACK" value={patch.filter.tracking} onChange={v => updatePatch('filter', 'tracking', v)} />
+                  <Knob label="CUTOFF" value={patch.filter.cutoff} onChange={v => updatePatch('filter', 'cutoff', v)} tooltip="Sets the frequency where attenuation begins. Lower values make the sound darker." />
+                  <Knob label="RES" value={patch.filter.resonance} onChange={v => updatePatch('filter', 'resonance', v)} tooltip="Boosts frequencies around the cutoff point. High values add a 'whistling' quality." />
+                  <Knob label="TYPE" value={patch.filter.type} onChange={v => updatePatch('filter', 'type', v)} tooltip="Selects filter mode: Low Pass (removes highs), High Pass (removes lows), or Band Pass." />
+                  <Knob label="TRACK" value={patch.filter.tracking} onChange={v => updatePatch('filter', 'tracking', v)} tooltip="Keyboard Tracking: How much the cutoff frequency follows the notes you play." />
                 </div>
               </ProSection>
               <ProSection title="MODULATION">
                 <div className="grid grid-cols-2 gap-6">
-                  <Knob label="ENV AMT" value={patch.filter.envAmount} min={-64} max={63} onChange={v => updatePatch('filter', 'envAmount', v)} />
-                  <Knob label="LFO1 AMT" value={patch.filter.lfo1Amount} min={-64} max={63} onChange={v => updatePatch('filter', 'lfo1Amount', v)} />
+                  <Knob label="ENV AMT" value={patch.filter.envAmount} min={-64} max={63} onChange={v => updatePatch('filter', 'envAmount', v)} tooltip="Modulation depth from Envelope 2 to the filter cutoff." />
+                  <Knob label="LFO1 AMT" value={patch.filter.lfo1Amount} min={-64} max={63} onChange={v => updatePatch('filter', 'lfo1Amount', v)} tooltip="Modulation depth from LFO 1 to the filter cutoff." />
                 </div>
               </ProSection>
             </>
@@ -198,26 +471,29 @@ export function PatchEditor({ user }: { user: User | null }) {
             <>
               <ProSection title="ENV 1 (AMP)">
                 <div className="grid grid-cols-2 gap-6">
-                  <Knob label="ATTACK" value={patch.env1.attack} onChange={v => updatePatch('env1', 'attack', v)} />
-                  <Knob label="DECAY" value={patch.env1.decay} onChange={v => updatePatch('env1', 'decay', v)} />
-                  <Knob label="SUSTAIN" value={patch.env1.sustain} onChange={v => updatePatch('env1', 'sustain', v)} />
-                  <Knob label="RELEASE" value={patch.env1.release} onChange={v => updatePatch('env1', 'release', v)} />
+                  <Knob label="ATTACK" value={patch.env1.attack} onChange={v => updatePatch('env1', 'attack', v)} tooltip="Time to reach max level after trigger." />
+                  <Knob label="DECAY" value={patch.env1.decay} onChange={v => updatePatch('env1', 'decay', v)} tooltip="Time to drop from peak to sustain level." />
+                  <Knob label="SUSTAIN" value={patch.env1.sustain} onChange={v => updatePatch('env1', 'sustain', v)} tooltip="Level maintained while note is held." />
+                  <Knob label="RELEASE" value={patch.env1.release} onChange={v => updatePatch('env1', 'release', v)} tooltip="Time to fade out after note release." />
+                  <Knob label="VELOCITY" value={patch.env1.velocity} onChange={v => updatePatch('env1', 'velocity', v)} tooltip="Sensitivity to key press strength." />
                 </div>
               </ProSection>
               <ProSection title="ENV 2 (MOD)">
                 <div className="grid grid-cols-2 gap-6">
-                  <Knob label="ATTACK" value={patch.env2.attack} onChange={v => updatePatch('env2', 'attack', v)} />
-                  <Knob label="DECAY" value={patch.env2.decay} onChange={v => updatePatch('env2', 'decay', v)} />
-                  <Knob label="SUSTAIN" value={patch.env2.sustain} onChange={v => updatePatch('env2', 'sustain', v)} />
-                  <Knob label="RELEASE" value={patch.env2.release} onChange={v => updatePatch('env2', 'release', v)} />
+                  <Knob label="ATTACK" value={patch.env2.attack} onChange={v => updatePatch('env2', 'attack', v)} tooltip="Time to reach max level after trigger." />
+                  <Knob label="DECAY" value={patch.env2.decay} onChange={v => updatePatch('env2', 'decay', v)} tooltip="Time to drop from peak to sustain level." />
+                  <Knob label="SUSTAIN" value={patch.env2.sustain} onChange={v => updatePatch('env2', 'sustain', v)} tooltip="Level maintained while note is held." />
+                  <Knob label="RELEASE" value={patch.env2.release} onChange={v => updatePatch('env2', 'release', v)} tooltip="Time to fade out after note release." />
+                  <Knob label="VELOCITY" value={patch.env2.velocity} onChange={v => updatePatch('env2', 'velocity', v)} tooltip="Sensitivity to key press strength." />
                 </div>
               </ProSection>
               <ProSection title="ENV 3 (MOD)">
                 <div className="grid grid-cols-2 gap-6">
-                  <Knob label="ATTACK" value={patch.env3.attack} onChange={v => updatePatch('env3', 'attack', v)} />
-                  <Knob label="DECAY" value={patch.env3.decay} onChange={v => updatePatch('env3', 'decay', v)} />
-                  <Knob label="SUSTAIN" value={patch.env3.sustain} onChange={v => updatePatch('env3', 'sustain', v)} />
-                  <Knob label="RELEASE" value={patch.env3.release} onChange={v => updatePatch('env3', 'release', v)} />
+                  <Knob label="ATTACK" value={patch.env3.attack} onChange={v => updatePatch('env3', 'attack', v)} tooltip="Time to reach max level after trigger." />
+                  <Knob label="DECAY" value={patch.env3.decay} onChange={v => updatePatch('env3', 'decay', v)} tooltip="Time to drop from peak to sustain level." />
+                  <Knob label="SUSTAIN" value={patch.env3.sustain} onChange={v => updatePatch('env3', 'sustain', v)} tooltip="Level maintained while note is held." />
+                  <Knob label="RELEASE" value={patch.env3.release} onChange={v => updatePatch('env3', 'release', v)} tooltip="Time to fade out after note release." />
+                  <Knob label="VELOCITY" value={patch.env3.velocity} onChange={v => updatePatch('env3', 'velocity', v)} tooltip="Sensitivity to key press strength." />
                 </div>
               </ProSection>
             </>
@@ -227,16 +503,109 @@ export function PatchEditor({ user }: { user: User | null }) {
             <>
               <ProSection title="LFO 1">
                 <div className="grid grid-cols-2 gap-6">
-                  <Knob label="WAVE" value={patch.lfo1.waveform} onChange={v => updatePatch('lfo1', 'waveform', v)} />
-                  <Knob label="RATE" value={patch.lfo1.rate} onChange={v => updatePatch('lfo1', 'rate', v)} />
-                  <Knob label="DELAY" value={patch.lfo1.delay} onChange={v => updatePatch('lfo1', 'delay', v)} />
+                  <Knob label="WAVE" value={patch.lfo1.waveform} onChange={v => updatePatch('lfo1', 'waveform', v)} tooltip="Selects the modulation shape." />
+                  <Knob label="RATE" value={patch.lfo1.rate} onChange={v => updatePatch('lfo1', 'rate', v)} tooltip="Speed of the modulation cycle." />
+                  <Knob label="DELAY" value={patch.lfo1.delay} onChange={v => updatePatch('lfo1', 'delay', v)} tooltip="Time before modulation starts." />
+                  <div className="flex items-center gap-2 group relative">
+                    <input 
+                      type="checkbox" 
+                      checked={patch.lfo1.sync} 
+                      onChange={e => updatePatch('lfo1', 'sync', e.target.checked)}
+                      className="w-4 h-4 rounded border-zinc-800 bg-zinc-900 text-brand-primary focus:ring-brand-primary/20"
+                    />
+                    <span className="text-[9px] font-black text-zinc-500 uppercase tracking-widest">SYNC</span>
+                    <div className="absolute bottom-full left-0 mb-2 w-48 p-2 bg-zinc-900 border border-zinc-800 rounded text-[8px] text-zinc-400 opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity z-50 shadow-xl">
+                      Tempo Sync: Locks LFO 1 rate to the project BPM. Modulation stays perfectly in time with your track.
+                      <div className="absolute top-full left-2 border-4 border-transparent border-t-zinc-800" />
+                    </div>
+                  </div>
                 </div>
               </ProSection>
               <ProSection title="LFO 2">
                 <div className="grid grid-cols-2 gap-6">
-                  <Knob label="WAVE" value={patch.lfo2.waveform} onChange={v => updatePatch('lfo2', 'waveform', v)} />
-                  <Knob label="RATE" value={patch.lfo2.rate} onChange={v => updatePatch('lfo2', 'rate', v)} />
-                  <Knob label="DELAY" value={patch.lfo2.delay} onChange={v => updatePatch('lfo2', 'delay', v)} />
+                  <Knob label="WAVE" value={patch.lfo2.waveform} onChange={v => updatePatch('lfo2', 'waveform', v)} tooltip="Selects the modulation shape." />
+                  <Knob label="RATE" value={patch.lfo2.rate} onChange={v => updatePatch('lfo2', 'rate', v)} tooltip="Speed of the modulation cycle." />
+                  <Knob label="DELAY" value={patch.lfo2.delay} onChange={v => updatePatch('lfo2', 'delay', v)} tooltip="Time before modulation starts." />
+                  <div className="flex items-center gap-2 group relative">
+                    <input 
+                      type="checkbox" 
+                      checked={patch.lfo2.sync} 
+                      onChange={e => updatePatch('lfo2', 'sync', e.target.checked)}
+                      className="w-4 h-4 rounded border-zinc-800 bg-zinc-900 text-brand-primary focus:ring-brand-primary/20"
+                    />
+                    <span className="text-[9px] font-black text-zinc-500 uppercase tracking-widest">SYNC</span>
+                    <div className="absolute bottom-full left-0 mb-2 w-48 p-2 bg-zinc-900 border border-zinc-800 rounded text-[8px] text-zinc-400 opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity z-50 shadow-xl">
+                      Tempo Sync: Locks LFO 2 rate to the project BPM. Modulation stays perfectly in time with your track.
+                      <div className="absolute top-full left-2 border-4 border-transparent border-t-zinc-800" />
+                    </div>
+                  </div>
+                </div>
+              </ProSection>
+              <ProSection title="MOD MATRIX (TOP 4)">
+                <div className="space-y-4">
+                  {[0, 1, 2, 3].map(i => (
+                    <div key={i} className="flex items-center gap-2 bg-zinc-900/30 p-2 rounded border border-zinc-800/50">
+                      <div className="text-[8px] font-black text-zinc-600 w-4">{i+1}</div>
+                      <div className="flex-1 grid grid-cols-3 gap-2">
+                        <div className="group relative">
+                          <input 
+                            type="number" 
+                            value={patch.modMatrix[i]?.source || 0} 
+                            onChange={e => {
+                              const newMatrix = [...patch.modMatrix];
+                              newMatrix[i] = { ...(newMatrix[i] || { source: 0, destination: 0, amount: 0 }), source: parseInt(e.target.value) };
+                              setPatch(p => ({ ...p, modMatrix: newMatrix }));
+                            }}
+                            className="w-full bg-zinc-800 text-[9px] text-white border border-zinc-700 rounded px-1 py-0.5"
+                            placeholder="SRC"
+                          />
+                          <div className="absolute bottom-full left-0 mb-2 w-32 p-2 bg-zinc-900 border border-zinc-800 rounded text-[8px] text-zinc-400 opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity z-50 shadow-xl">
+                            Modulation Source (e.g., LFO, Env, Velocity).
+                          </div>
+                        </div>
+                        <div className="group relative">
+                          <input 
+                            type="number" 
+                            value={patch.modMatrix[i]?.destination || 0} 
+                            onChange={e => {
+                              const newMatrix = [...patch.modMatrix];
+                              newMatrix[i] = { ...(newMatrix[i] || { source: 0, destination: 0, amount: 0 }), destination: parseInt(e.target.value) };
+                              setPatch(p => ({ ...p, modMatrix: newMatrix }));
+                            }}
+                            className="w-full bg-zinc-800 text-[9px] text-white border border-zinc-700 rounded px-1 py-0.5"
+                            placeholder="DEST"
+                          />
+                          <div className="absolute bottom-full left-0 mb-2 w-32 p-2 bg-zinc-900 border border-zinc-800 rounded text-[8px] text-zinc-400 opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity z-50 shadow-xl">
+                            Modulation Destination (e.g., Pitch, Cutoff, Level).
+                          </div>
+                        </div>
+                        <div className="group relative">
+                          <input 
+                            type="number" 
+                            value={patch.modMatrix[i]?.amount || 0} 
+                            onChange={e => {
+                              const newMatrix = [...patch.modMatrix];
+                              newMatrix[i] = { ...(newMatrix[i] || { source: 0, destination: 0, amount: 0 }), amount: parseInt(e.target.value) };
+                              setPatch(p => ({ ...p, modMatrix: newMatrix }));
+                            }}
+                            className="w-full bg-zinc-800 text-[9px] text-white border border-zinc-700 rounded px-1 py-0.5"
+                            placeholder="AMT"
+                          />
+                          <div className="absolute bottom-full left-0 mb-2 w-32 p-2 bg-zinc-900 border border-zinc-800 rounded text-[8px] text-zinc-400 opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity z-50 shadow-xl">
+                            Modulation Depth/Amount (-64 to +63).
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </ProSection>
+              <ProSection title="EFFECTS">
+                <div className="grid grid-cols-2 gap-6">
+                  <Knob label="DIST TYPE" value={patch.distortion.type} onChange={v => updatePatch('distortion', 'type', v)} tooltip="Selects the type of distortion/saturation." />
+                  <Knob label="DIST LVL" value={patch.distortion.level} onChange={v => updatePatch('distortion', 'level', v)} tooltip="Amount of distortion applied to the signal." />
+                  <Knob label="CHOR TYPE" value={patch.chorus.type} onChange={v => updatePatch('chorus', 'type', v)} tooltip="Selects the chorus/flanger/phaser mode." />
+                  <Knob label="CHOR LVL" value={patch.chorus.level} onChange={v => updatePatch('chorus', 'level', v)} tooltip="Mix level of the chorus effect." />
                 </div>
               </ProSection>
             </>
@@ -307,12 +676,12 @@ function WaveformSelector({ value, onChange }: { value: number; onChange: (v: nu
   );
 }
 
-function Knob({ label, value, min = 0, max = 127, onChange }: { label: string; value: number; min?: number; max?: number; onChange: (v: number) => void }) {
+function Knob({ label, value, min = 0, max = 127, onChange, tooltip }: { label: string; value: number; min?: number; max?: number; onChange: (v: number) => void; tooltip?: string }) {
   const percentage = ((value - min) / (max - min)) * 100;
   const rotation = -135 + (percentage * 2.7);
 
   return (
-    <div className="knob-container group">
+    <div className="knob-container group relative">
       <div className="text-[9px] font-black text-zinc-600 group-hover:text-brand-primary transition-colors tracking-widest uppercase mb-1">{label}</div>
       <div className="relative">
         <div className="knob-ring group-active:scale-95">
@@ -331,6 +700,13 @@ function Knob({ label, value, min = 0, max = 127, onChange }: { label: string; v
         />
       </div>
       <div className="text-[10px] font-mono font-bold text-zinc-500 mt-1">{value}</div>
+      
+      {tooltip && (
+        <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-32 p-2 bg-zinc-900 border border-zinc-800 rounded text-[8px] text-zinc-400 opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity z-50 shadow-xl text-center">
+          {tooltip}
+          <div className="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-zinc-800" />
+        </div>
+      )}
     </div>
   );
 }

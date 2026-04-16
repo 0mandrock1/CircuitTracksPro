@@ -54,6 +54,10 @@ export function SampleEditor({ user }: { user: User | null }) {
     alert(`Drum Slot ${slot + 1} updated via MIDI!`);
   };
 
+  const handleHWPreview = () => {
+    midiService.playDrumOnHardware(slot);
+  };
+
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -139,6 +143,10 @@ export function SampleEditor({ user }: { user: User | null }) {
         </div>
 
         <div className="flex items-center gap-2">
+          <button onClick={handleHWPreview} className="pro-button pro-button-secondary bg-zinc-800 border-zinc-700">
+            <Play className="w-4 h-4 fill-current" /> HW PREVIEW
+          </button>
+          <div className="w-px h-8 bg-zinc-800 mx-1" />
           <button onClick={handleFetch} className="pro-button pro-button-secondary">
             <RefreshCw className="w-4 h-4" /> FETCH
           </button>

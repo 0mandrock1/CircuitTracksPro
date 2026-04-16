@@ -16,6 +16,9 @@ export default function App() {
   const [loading, setLoading] = useState(true);
   const [midiActive, setMidiActive] = useState(false);
 
+  const [midiPorts, setMidiPorts] = useState<{ inputs: MIDIInput[]; outputs: MIDIOutput[] }>({ inputs: [], outputs: [] });
+  const [selectedPorts, setSelectedPorts] = useState<{ input: string | null; output: string | null }>({ input: null, output: null });
+
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, (user) => {
       setUser(user);
@@ -25,11 +28,21 @@ export default function App() {
     const checkMidi = async () => {
       const access = await midiService.requestAccess();
       setMidiActive(access);
+      if (access) {
+        setMidiPorts(midiService.getAvailablePorts());
+        setSelectedPorts(midiService.getSelectedPorts());
+      }
     };
     checkMidi();
 
     return () => unsubscribe();
   }, []);
+
+  const handlePortChange = (type: 'input' | 'output', id: string) => {
+    if (type === 'input') midiService.setInput(id);
+    else midiService.setOutput(id);
+    setSelectedPorts(midiService.getSelectedPorts());
+  };
 
   const handleLogin = async () => {
     try {
@@ -74,6 +87,31 @@ export default function App() {
                 <span className="text-[9px] text-brand-primary font-black uppercase tracking-[0.3em]">Pro Manager</span>
                 <div className={cn("w-1.5 h-1.5 rounded-full", midiActive ? "bg-emerald-500 animate-pulse" : "bg-zinc-800")} />
               </div>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-4">
+            <div className="hidden lg:flex items-center gap-2 bg-[#140a0b] p-1 rounded-lg border border-[#2a1517]">
+              <select 
+                value={selectedPorts.input || ''} 
+                onChange={(e) => handlePortChange('input', e.target.value)}
+                className="bg-transparent text-[8px] font-black text-zinc-500 border-none focus:ring-0 uppercase tracking-tighter max-w-[100px]"
+              >
+                <option value="">No Input</option>
+                {midiPorts.inputs.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+              </select>
+              <div className="w-px h-4 bg-zinc-800" />
+              <select 
+                value={selectedPorts.output || ''} 
+                onChange={(e) => handlePortChange('output', e.target.value)}
+                className="bg-transparent text-[8px] font-black text-zinc-500 border-none focus:ring-0 uppercase tracking-tighter max-w-[100px]"
+              >
+                <option value="">No Output</option>
+                {midiPorts.outputs.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+              </select>
+            </div>
+            <div className="flex items-center gap-2 px-3 py-1.5 bg-zinc-900/50 rounded-lg border border-zinc-800">
+              <span className="text-[9px] text-zinc-500 font-black uppercase tracking-widest">MIDI</span>
             </div>
           </div>
 
