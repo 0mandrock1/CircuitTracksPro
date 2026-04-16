@@ -9,6 +9,8 @@ import { motion, AnimatePresence } from 'motion/react';
 
 import { Visualizer } from './Visualizer';
 
+import * as Tone from 'tone';
+
 const DEFAULT_PATCH: PatchData = {
   name: "INIT PATCH",
   author: "User",
@@ -30,11 +32,25 @@ const DEFAULT_PATCH: PatchData = {
 
 export function PatchEditor({ user }: { user: User | null }) {
   const [patch, setPatch] = useState<PatchData>(DEFAULT_PATCH);
-  const [trigger, setTrigger] = useState(false);
+  const [lastSavedPatch, setLastSavedPatch] = useState<PatchData>(DEFAULT_PATCH);
+  const [synthTrigger, setSynthTrigger] = useState(0);
   const [saving, setSaving] = useState(false);
   const [midiStatus, setMidiStatus] = useState("Disconnected");
   const [activeTab, setActiveTab] = useState<'oscillators' | 'filter' | 'envelopes' | 'modulation'>('oscillators');
   const [selectedSynth, setSelectedSynth] = useState<0 | 1>(0);
+
+  const isDirty = JSON.stringify(patch) !== JSON.stringify(lastSavedPatch);
+
+  useEffect(() => {
+    const handleBeforeUnload = (e: BeforeUnloadEvent) => {
+      if (isDirty) {
+        e.preventDefault();
+        e.returnValue = '';
+      }
+    };
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload);
+  }, [isDirty]);
 
   useEffect(() => {
     const initMidi = async () => {
@@ -58,8 +74,6 @@ export function PatchEditor({ user }: { user: User | null }) {
 
   const [midiLog, setMidiLog] = useState<string[]>([]);
   const [lastSysEx, setLastSysEx] = useState<string>("");
-  const [showMidiSettings, setShowMidiSettings] = useState(false);
-  const [synthTrigger, setSynthTrigger] = useState(false);
 
   const addLog = (msg: string) => {
     setMidiLog(prev => [msg, ...prev].slice(0, 5));
@@ -70,6 +84,7 @@ export function PatchEditor({ user }: { user: User | null }) {
       console.log("SysEx Received & Deserialized:", receivedPatch);
       addLog(`RECV: PATCH OK`);
       setPatch(receivedPatch);
+      setLastSavedPatch(receivedPatch); // Update last saved on fetch
     });
     
     const cleanupSysEx = midiService.onSysExReceived((data) => {
@@ -88,7 +103,30 @@ export function PatchEditor({ user }: { user: User | null }) {
     };
   }, [midiStatus]);
 
+  const handleSave = async () => {
+    if (!user) return;
+    setSaving(true);
+    try {
+      const patchId = patch.name.toLowerCase().replace(/\s+/g, '-');
+      await setDoc(doc(db, 'patches', patchId), {
+        ...patch,
+        authorUid: user.uid,
+        updatedAt: Timestamp.now()
+      });
+      setLastSavedPatch({ ...patch });
+      addLog("DB: PATCH SAVED");
+    } catch (e) {
+      console.error(e);
+      addLog("DB: SAVE FAILED");
+    } finally {
+      setSaving(false);
+    }
+  };
+
   const handleFetch = () => {
+    if (isDirty && !confirm("You have unsaved changes. Fetching will overwrite them. Continue?")) {
+      return;
+    }
     const bytes = midiService.requestPatchDump(selectedSynth);
     if (bytes > 0) {
       addLog(`SEND: FETCH S${selectedSynth + 1} (${bytes}B)`);
@@ -105,10 +143,14 @@ export function PatchEditor({ user }: { user: User | null }) {
     const bytes = midiService.sendPatch(patch, selectedSynth);
     if (bytes > 0) {
       addLog(`SEND: PATCH S${selectedSynth + 1} OK (${bytes}B)`);
-      // alert("Patch sent to Circuit!"); // Removing alert as it's annoying
     } else {
       addLog("SEND: PATCH FAILED");
     }
+  };
+
+  const handleSendVerify = async () => {
+    addLog(`SEND+VERIFY: START S${selectedSynth + 1}`);
+    await midiService.sendAndVerify(patch, selectedSynth);
   };
 
   const handleHWPreview = (note: number, synthIndex: number = 0) => {
@@ -127,22 +169,31 @@ export function PatchEditor({ user }: { user: User | null }) {
             <Cpu className="w-6 h-6 text-brand-primary" />
           </div>
           <div className="flex-1">
-            <input
-              type="text"
-              value={patch.name}
-              onChange={(e) => setPatch(p => ({ ...p, name: e.target.value }))}
-              className="bg-transparent text-xl font-black text-white border-none focus:ring-0 w-full uppercase tracking-widest"
-              placeholder="PATCH NAME"
-            />
+            <div className="flex items-center gap-2">
+              <input
+                type="text"
+                value={patch.name}
+                onChange={(e) => setPatch(p => ({ ...p, name: e.target.value }))}
+                className="bg-transparent text-xl font-black text-white border-none focus:ring-0 w-full uppercase tracking-widest"
+                placeholder="PATCH NAME"
+              />
+              {isDirty && (
+                <div className="flex items-center gap-1 px-2 py-0.5 bg-amber-500/20 border border-amber-500/30 rounded text-[9px] font-black text-amber-500 uppercase tracking-widest animate-pulse">
+                  Unsaved
+                </div>
+              )}
+            </div>
             <div className="flex items-center gap-2 mt-1">
               <span className={cn("w-2 h-2 rounded-full", midiStatus !== "Disconnected" ? "bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)]" : "bg-zinc-700")} />
               <span className="text-[10px] font-bold text-zinc-500 uppercase tracking-tighter">MIDI: {midiStatus}</span>
-              <button 
-                onClick={() => setShowMidiSettings(!showMidiSettings)}
-                className="text-[8px] font-black text-zinc-600 hover:text-brand-primary transition-colors uppercase tracking-widest ml-2"
-              >
-                [Settings]
-              </button>
+              <div className="bg-zinc-950 px-2 py-1 rounded border border-zinc-800 text-[8px] font-mono text-indigo-400 flex items-center gap-4">
+                {midiLog.slice(0, 2).map((log, i) => (
+                  <div key={i} className={cn(log.includes('ERR') ? 'text-rose-500' : log.includes('RECV') ? 'text-emerald-500' : '')}>
+                    {log}
+                  </div>
+                ))}
+                {midiLog.length === 0 && <div className="text-zinc-700 italic">No activity...</div>}
+              </div>
               {midiStatus === "Disconnected" && (
                 <button 
                   onClick={async () => {
@@ -225,142 +276,57 @@ export function PatchEditor({ user }: { user: User | null }) {
           </div>
           <div className="group relative">
             <button onClick={handleFetch} className="pro-button pro-button-secondary">
-              <RefreshCw className="w-4 h-4" /> FETCH
+              <Download className="w-4 h-4" /> FETCH
             </button>
-            <div className="absolute top-full left-1/2 -translate-x-1/2 mt-2 w-48 p-2 bg-zinc-900 border border-zinc-800 rounded text-[8px] text-zinc-400 opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity z-50 shadow-xl text-center">
-              Requests the current patch data from your Circuit Tracks.
-              <div className="absolute bottom-full left-1/2 -translate-x-1/2 border-4 border-transparent border-b-zinc-800" />
-            </div>
           </div>
           <div className="group relative">
-            <button onClick={handleSend} className="pro-button pro-button-secondary">
+            <button onClick={handleSend} className="pro-button pro-button-primary">
               <Send className="w-4 h-4" /> SEND
             </button>
-            <div className="absolute top-full left-1/2 -translate-x-1/2 mt-2 w-48 p-2 bg-zinc-900 border border-zinc-800 rounded text-[8px] text-zinc-400 opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity z-50 shadow-xl text-center">
-              Sends the current editor settings to your Circuit Tracks.
-              <div className="absolute bottom-full left-1/2 -translate-x-1/2 border-4 border-transparent border-b-zinc-800" />
-            </div>
+          </div>
+          <div className="group relative">
+            <button onClick={handleSendVerify} className="pro-button bg-indigo-600 hover:bg-indigo-500 text-white">
+              <RefreshCw className="w-4 h-4" /> SEND+VERIFY
+            </button>
           </div>
           <div className="w-px h-8 bg-zinc-800 mx-2 hidden sm:block" />
           <div className="group relative flex items-center gap-2">
             <div className="flex flex-col items-center">
-              <button onClick={() => setSynthTrigger(!synthTrigger)} className="pro-button pro-button-primary">
+              <button 
+                onClick={async () => {
+                  console.log("PatchEditor: PREVIEW clicked");
+                  try {
+                    await Tone.start();
+                    console.log("PatchEditor: Tone started, state:", Tone.getContext().state);
+                    setSynthTrigger(prev => prev + 1);
+                  } catch (err) {
+                    console.error("PatchEditor: Tone.start failed", err);
+                  }
+                }} 
+                className="pro-button pro-button-primary"
+              >
                 <Play className="w-4 h-4 fill-current" /> PREVIEW
               </button>
-              <div className="h-1 w-full mt-1 bg-indigo-500/20 rounded-full overflow-hidden">
-                <Visualizer trigger={synthTrigger} patch={patch} />
-              </div>
-            </div>
-            <div className="absolute top-full left-1/2 -translate-x-1/2 mt-2 w-48 p-2 bg-zinc-900 border border-zinc-800 rounded text-[8px] text-zinc-400 opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity z-50 shadow-xl text-center">
-              Plays a short preview note on your computer's speakers.
-              <div className="absolute bottom-full left-1/2 -translate-x-1/2 border-4 border-transparent border-b-zinc-800" />
             </div>
           </div>
+          <div className="w-48 h-12 bg-black/40 rounded border border-white/5 overflow-hidden hidden md:block relative">
+            <Visualizer trigger={synthTrigger as any} patch={patch} />
+          </div>
           {user && (
-            <button onClick={() => {}} className="pro-button bg-emerald-600 hover:bg-emerald-500 text-white">
-              <Save className="w-4 h-4" /> CLOUD
+            <button 
+              onClick={handleSave} 
+              disabled={saving || !isDirty}
+              className={cn(
+                "pro-button text-white transition-all",
+                isDirty ? "bg-emerald-600 hover:bg-emerald-500" : "bg-zinc-800 text-zinc-500 cursor-not-allowed"
+              )}
+            >
+              <Save className={cn("w-4 h-4", saving && "animate-spin")} /> 
+              {saving ? "SAVING..." : "CLOUD"}
             </button>
           )}
         </div>
       </div>
-
-      <AnimatePresence>
-        {showMidiSettings && (
-          <motion.div 
-            initial={{ height: 0, opacity: 0 }}
-            animate={{ height: 'auto', opacity: 1 }}
-            exit={{ height: 0, opacity: 0 }}
-            className="overflow-hidden"
-          >
-            <div className="pro-panel p-4 bg-zinc-900/30 border-brand-primary/20">
-              <div className="flex items-center justify-between mb-4">
-                <h4 className="text-[10px] font-black text-brand-primary uppercase tracking-[0.2em]">MIDI Debug & Settings</h4>
-                <button onClick={() => setShowMidiSettings(false)} className="text-[10px] text-zinc-600 hover:text-white uppercase font-black">Close</button>
-              </div>
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                <div className="space-y-2">
-                  <p className="text-[9px] font-bold text-zinc-500 uppercase">Header Format</p>
-                  <div className="flex gap-2">
-                    <button 
-                      onClick={() => (midiService as any).useNineByteHeader = false}
-                      className={cn("flex-1 py-2 text-[9px] font-black rounded border transition-all", !(midiService as any).useNineByteHeader ? "bg-brand-primary border-brand-primary text-white" : "bg-zinc-800 border-zinc-700 text-zinc-500")}
-                    >
-                      8-BYTE (STD)
-                    </button>
-                    <button 
-                      onClick={() => (midiService as any).useNineByteHeader = true}
-                      className={cn("flex-1 py-2 text-[9px] font-black rounded border transition-all", (midiService as any).useNineByteHeader ? "bg-brand-primary border-brand-primary text-white" : "bg-zinc-800 border-zinc-700 text-zinc-500")}
-                    >
-                      9-BYTE (EXT)
-                    </button>
-                  </div>
-                </div>
-                <div className="space-y-2">
-                  <p className="text-[9px] font-bold text-zinc-500 uppercase">Product ID</p>
-                  <div className="flex gap-2">
-                    <button 
-                      onClick={() => (midiService as any).productId = 0x64}
-                      className={cn("flex-1 py-2 text-[9px] font-black rounded border transition-all", (midiService as any).productId === 0x64 ? "bg-brand-primary border-brand-primary text-white" : "bg-zinc-800 border-zinc-700 text-zinc-500")}
-                    >
-                      TRACKS (64h)
-                    </button>
-                    <button 
-                      onClick={() => (midiService as any).productId = 0x60}
-                      className={cn("flex-1 py-2 text-[9px] font-black rounded border transition-all", (midiService as any).productId === 0x60 ? "bg-brand-primary border-brand-primary text-white" : "bg-zinc-800 border-zinc-700 text-zinc-500")}
-                    >
-                      CIRCUIT (60h)
-                    </button>
-                  </div>
-                </div>
-                <div className="space-y-2">
-                  <p className="text-[9px] font-bold text-zinc-500 uppercase">Header Size</p>
-                  <div className="flex gap-2">
-                    <button 
-                      onClick={() => (midiService as any).forceHeaderSize = 8}
-                      className={cn("flex-1 py-1 text-[8px] font-black rounded border transition-all", (midiService as any).forceHeaderSize === 8 ? "bg-brand-primary border-brand-primary text-white" : "bg-zinc-800 border-zinc-700 text-zinc-500")}
-                    >
-                      FORCE 8
-                    </button>
-                    <button 
-                      onClick={() => (midiService as any).forceHeaderSize = 9}
-                      className={cn("flex-1 py-1 text-[8px] font-black rounded border transition-all", (midiService as any).forceHeaderSize === 9 ? "bg-brand-primary border-brand-primary text-white" : "bg-zinc-800 border-zinc-700 text-zinc-500")}
-                    >
-                      FORCE 9
-                    </button>
-                    <button 
-                      onClick={() => (midiService as any).forceHeaderSize = null}
-                      className={cn("flex-1 py-1 text-[8px] font-black rounded border transition-all", (midiService as any).forceHeaderSize === null ? "bg-brand-primary border-brand-primary text-white" : "bg-zinc-800 border-zinc-700 text-zinc-500")}
-                    >
-                      AUTO
-                    </button>
-                  </div>
-                </div>
-                <div className="space-y-2">
-                  <p className="text-[9px] font-bold text-zinc-500 uppercase">Advanced</p>
-                  <div className="flex gap-2">
-                    <button 
-                      onClick={() => (midiService as any).useExtraByte = !(midiService as any).useExtraByte}
-                      className={cn("flex-1 py-1 text-[8px] font-black rounded border transition-all", (midiService as any).useExtraByte ? "bg-brand-primary border-brand-primary text-white" : "bg-zinc-800 border-zinc-700 text-zinc-500")}
-                    >
-                      EXTRA BYTE
-                    </button>
-                  </div>
-                </div>
-                <div className="space-y-2">
-                  <p className="text-[9px] font-bold text-zinc-500 uppercase">Status</p>
-                  <div className="bg-zinc-950 p-2 rounded border border-zinc-800 text-[8px] font-mono text-emerald-500">
-                    <div>HEADER: {(midiService as any).forceHeaderSize || (midiService as any).detectedHeaderSize}-BYTE {(midiService as any).forceHeaderSize ? '(FORCED)' : '(AUTO)'}</div>
-                    <div>PROD_ID: 0x{(midiService as any).productId?.toString(16).toUpperCase()}</div>
-                    <div>DEV_ID: 0x{(midiService as any).deviceId?.toString(16).toUpperCase()}</div>
-                    <div>EXTRA_B: {(midiService as any).useExtraByte ? 'YES' : 'NO'}</div>
-                    <div>SYNTH: {selectedSynth + 1}</div>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </motion.div>
-        )}
-      </AnimatePresence>
 
       {/* Tabs */}
       <div className="flex gap-1 bg-[#1a1011] p-1 rounded-xl border border-[#2a1517]">

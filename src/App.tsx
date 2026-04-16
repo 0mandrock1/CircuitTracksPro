@@ -193,12 +193,11 @@ export default function App() {
         <div className="max-w-7xl mx-auto px-4 flex flex-col md:flex-row items-center justify-between gap-8">
           <div className="flex items-center gap-3 opacity-50 grayscale hover:grayscale-0 transition-all">
              <Radio className="w-6 h-6 text-brand-primary" />
-             <span className="text-sm font-black tracking-widest uppercase">Nova Engine v2.0</span>
+             <span className="text-sm font-black tracking-widest uppercase">Circuit Tracks Pro</span>
           </div>
           <div className="flex items-center gap-8 text-[10px] font-black text-zinc-600 uppercase tracking-[0.2em]">
-            <a href="#" className="hover:text-brand-primary transition-colors">MIDI Implementation</a>
-            <a href="#" className="hover:text-brand-primary transition-colors">SysEx Protocol</a>
-            <a href="#" className="hover:text-brand-primary transition-colors">Firmware v2.0</a>
+            <a href="https://customer.novationmusic.com/sites/customer/files/novation/downloads/10590/circuit-tracks-programmers-reference-guide-en_0.pdf" target="_blank" rel="noopener noreferrer" className="hover:text-brand-primary transition-colors">MIDI Implementation</a>
+            <a href="https://customer.novationmusic.com/sites/customer/files/novation/downloads/10590/circuit-tracks-programmers-reference-guide-en_0.pdf" target="_blank" rel="noopener noreferrer" className="hover:text-brand-primary transition-colors">SysEx Protocol</a>
           </div>
           <p className="text-[10px] font-bold text-zinc-700 uppercase tracking-widest">© 2026 Circuit Tracks Pro</p>
         </div>

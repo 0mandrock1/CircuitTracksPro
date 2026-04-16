@@ -3,7 +3,7 @@ import * as Tone from 'tone';
 import { PatchData } from '../types';
 
 interface VisualizerProps {
-  trigger: boolean;
+  trigger: number;
   patch: PatchData;
 }
 
@@ -24,6 +24,17 @@ export function Visualizer({ trigger, patch }: VisualizerProps) {
 
     const draw = () => {
       const values = analyzer.getValue() as Float32Array;
+      
+      if (Math.random() < 0.01) {
+        console.log("Visualizer: Context state", Tone.getContext().state);
+      }
+
+      // Debug: check if we have any signal
+      const hasSignal = values.some(v => Math.abs(v) > 0.01);
+      if (hasSignal && Math.random() < 0.01) {
+        console.log("Visualizer: Signal detected!");
+      }
+
       ctx.clearRect(0, 0, canvas.width, canvas.height);
       ctx.beginPath();
       ctx.lineWidth = 2;

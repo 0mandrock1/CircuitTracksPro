@@ -27,6 +27,7 @@ export interface PatchData {
   // Effects
   distortion: { type: number; level: number };
   chorus: { type: number; level: number; rate: number; depth: number; feedback: number };
+  raw?: Uint8Array; // Original SysEx data for preservation
 }
 
 export interface OscillatorParams {
